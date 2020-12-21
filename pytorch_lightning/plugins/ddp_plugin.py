@@ -1,14 +1,17 @@
 import os
-from typing import Any, Dict, List
+from contextlib import contextmanager
+from typing import Any, Dict, List, Optional, Union
 
 import torch.distributed as torch_distrib
-from pytorch_lightning import _logger as log
 from torch.optim import Optimizer
+
+from pytorch_lightning import _logger as log
 from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
+from pytorch_lightning.plugins.plugin import LightningPlugin
 
 
-class DDPPlugin(object):
+class DDPPlugin(LightningPlugin):
     """
     Plugin to link a custom ddp implementation to any arbitrary accelerator.
 
@@ -31,7 +34,7 @@ class DDPPlugin(object):
         self._ddp_kwargs: Dict[str, Any] = kwargs
 
     def configure_ddp(
-        self, model: LightningModule, device_ids: List[int]
+            self, model: LightningModule, device_ids: List[int]
     ) -> LightningDistributedDataParallel:
         """
         Pass through all customizations from constructor to `LightningDistributedDataParallel`.
@@ -68,12 +71,12 @@ class DDPPlugin(object):
         return model
 
     def init_ddp_connection(
-        self,
-        trainer,
-        cluster_environment,
-        global_rank: int,
-        world_size: int,
-        is_slurm_managing_tasks: bool = True,
+            self,
+            trainer,
+            cluster_environment,
+            global_rank: int,
+            world_size: int,
+            is_slurm_managing_tasks: bool = True,
     ) -> None:
         os.environ["MASTER_ADDR"] = str(cluster_environment.master_address())
         os.environ["MASTER_PORT"] = str(cluster_environment.master_port())
@@ -108,3 +111,58 @@ class DDPPlugin(object):
 
     def optimizer_state(self, optimizer: Optimizer) -> dict:
         return optimizer.state_dict()
+
+    def on_after_setup_optimizers(self, trainer):
+        """
+        Called after optimizers have been set-up. This is useful for doing any configuration options in RPC, or
+        state sharding.
+        """
+
+    def get_model_from_plugin(
+            self,
+            model: Union[LightningDistributedDataParallel, LightningModule]
+    ) -> LightningModule:
+        """
+        Override to modify returning base :class:`LightningModule`
+        when accessing variable and functions outside of the parallel wrapper.
+
+        Example::
+            ref_model = ddp_plugin.get_model_from_plugin(model)
+            ref_model.training_step(...)
+
+        Args:
+            model: Model with parallel wrapper.
+
+        Returns: Reference :class:`LightningModule` within parallel wrapper.
+
+        """
+        if isinstance(model, LightningDistributedDataParallel):
+            return model.module
+        return model
+
+    @contextmanager
+    def block_backward_sync(self, model: LightningDistributedDataParallel):
+        """
+        Blocks ddp sync gradients behaviour on backwards pass.
+        This is useful for skipping sync when accumulating gradients, reducing communication overhead
+        Returns: context manager with sync behaviour off
+        """
+        yield model.no_sync()
+
+    def on_before_manual_backward(self, model: LightningDistributedDataParallel, output: Any):
+        model.reducer_prepare_for_backwards(output)
+
+    def on_after_manual_backward(self, model: LightningDistributedDataParallel):
+        model.reducer_reset_hooks()
+
+    def distributed_sampler_kwargs(self, distributed_sampler_kwargs):
+        return distributed_sampler_kwargs
+
+    @property
+    def data_parallel_group(self):
+        """
+        Return the group that this process exists in. By default, this is the world size.
+        Useful for when additional parallel groups have been created, to select certain processes.
+        Returns: The ProcessGroup this process exists in.
+        """
+        return torch_distrib.group.WORLD

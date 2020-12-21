@@ -13,21 +13,31 @@
 # limitations under the License.
 
 from argparse import ArgumentParser
+
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 from torch.utils.data import DataLoader
-import pytorch_lightning as pl
 from torch.utils.data import random_split
 
-try:
+import pytorch_lightning as pl
+from pl_examples import TORCHVISION_AVAILABLE, cli_lightning_logo
+
+if TORCHVISION_AVAILABLE:
     from torchvision.datasets.mnist import MNIST
     from torchvision import transforms
-except ModuleNotFoundError:
+else:
     from tests.base.datasets import MNIST
 
 
 class LitAutoEncoder(pl.LightningModule):
+    """
+    >>> LitAutoEncoder()  # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
+    LitAutoEncoder(
+      (encoder): ...
+      (decoder): ...
+    )
+    """
 
     def __init__(self):
         super().__init__()
@@ -102,4 +112,5 @@ def cli_main():
 
 
 if __name__ == '__main__':
+    cli_lightning_logo()
     cli_main()
